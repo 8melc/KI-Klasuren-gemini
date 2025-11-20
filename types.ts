@@ -1,3 +1,5 @@
+export type Page = 'upload' | 'result';
+
 export interface TaskGrading {
   id: string;
   points: number;
@@ -15,26 +17,41 @@ export interface GradingResult {
   summary: string;
 }
 
-export enum UploadType {
-  EXPECTATION = 'expectation',
-  EXAM_TEXT = 'examText',
-  STUDENT_PDF = 'studentPdf'
+export interface StudentSubmission {
+  id: string;
+  file: File;
+  name: string;
+  status: 'idle' | 'ocr' | 'grading' | 'success' | 'error';
+  result: GradingResult | null;
+  textData: string | null;
+  error?: string;
 }
 
 export interface AppState {
-  step: 'upload' | 'processing' | 'results';
   files: {
     expectationHorizon: File | null;
     examText: File | null;
-    studentPdf: File | null;
   };
   textData: {
     expectationHorizon: string;
     examText: string;
-    studentAnswers: string;
   };
-  gradingResult: GradingResult | null;
-  studentName: string;
+  students: StudentSubmission[];
+  currentStudentId: string | null;
+  
   error: string | null;
   statusMessage: string;
+  isProcessing: boolean;
+}
+
+export interface GradingContextType extends AppState {
+  currentPage: Page;
+  setFile: (type: 'expectationHorizon' | 'examText', file: File) => void;
+  addStudentFiles: (files: File[]) => void;
+  removeStudent: (id: string) => void;
+  updateStudentName: (id: string, name: string) => void;
+  selectStudent: (id: string | null) => void;
+  startGrading: () => Promise<boolean>;
+  reset: () => void;
+  navigateTo: (page: Page) => void;
 }

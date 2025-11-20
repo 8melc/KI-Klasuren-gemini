@@ -30,9 +30,17 @@ const gradingSchema = {
   required: ["tasks", "totalPoints", "maxPoints", "grade", "summary"]
 };
 
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 export async function performOCR(base64Images: string[], mode: 'handwritten' | 'document' = 'handwritten'): Promise<string> {
-  try {
-    const parts = base64Images.map(img => ({
+  const CHUNK_SIZE = 4; 
+  let fullText = "";
+
+  // Process images in chunks to avoid hitting payload limits or timeouts
+  for (let i = 0; i < base64Images.length; i += CHUNK_SIZE) {
+    const chunkImages = base64Images.slice(i, i + CHUNK_SIZE);
+    
+    const parts = chunkImages.map(img => ({
       inlineData: {
         mimeType: 'image/png',
         data: img
@@ -41,27 +49,48 @@ export async function performOCR(base64Images: string[], mode: 'handwritten' | '
 
     let promptText = "";
     if (mode === 'handwritten') {
-      promptText = "Transkribiere den gesamten handgeschriebenen Text auf dieser Klausur. Behalte die Struktur bei (Aufgabennummern, Absätze). Gib nur den reinen Text zurück. Antworte auf Deutsch.";
+      promptText = `Dies ist Teil ${Math.floor(i/CHUNK_SIZE) + 1} des Dokuments. Transkribiere den gesamten handgeschriebenen Text auf diesen Seiten. Behalte die Struktur bei (Aufgabennummern, Absätze). Gib nur den reinen Text zurück. Antworte auf Deutsch.`;
     } else {
-      promptText = "Du bist ein Multimodaler Dokumenten-Analyst. Extrahiere den gesamten Inhalt aus diesem Dokument. Behalte die Formatierung, Struktur und logischen Abschnitte exakt bei. Ignoriere Seitenzahlen oder Kopf-/Fußzeilen, wenn sie den Lesefluss stören. Antworte auf Deutsch.";
+      promptText = `Dies ist Teil ${Math.floor(i/CHUNK_SIZE) + 1} des Dokuments. Du bist ein Multimodaler Dokumenten-Analyst. Extrahiere den gesamten Inhalt. Behalte die Formatierung, Struktur und logischen Abschnitte exakt bei. Antworte auf Deutsch.`;
     }
 
     parts.push({
       text: promptText
     } as any);
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: {
-        parts: parts
-      }
-    });
+    let retries = 3;
+    let success = false;
+    let lastError;
 
-    return response.text || "";
-  } catch (error) {
-    console.error("OCR Error:", error);
-    throw new Error("Dokumenteninhalt konnte nicht verarbeitet werden.");
+    while (retries > 0 && !success) {
+      try {
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: {
+            parts: parts
+          }
+        });
+
+        if (response.text) {
+          fullText += response.text + "\n\n";
+        }
+        success = true;
+      } catch (error: any) {
+        console.warn(`OCR Chunk ${Math.floor(i/CHUNK_SIZE) + 1} failed, retries left: ${retries - 1}`, error);
+        lastError = error;
+        retries--;
+        // Exponential backoff: 2s, 4s, 8s
+        if (retries > 0) await delay(2000 * Math.pow(2, 3 - retries));
+      }
+    }
+
+    if (!success) {
+      console.error("OCR completely failed for a chunk:", lastError);
+      throw new Error("Dokumenteninhalt konnte auch nach mehreren Versuchen nicht verarbeitet werden.");
+    }
   }
+
+  return fullText;
 }
 
 export async function gradeExam(
@@ -117,24 +146,29 @@ export async function gradeExam(
   - 6 (ungenügend): <30%
   `;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: gradingSchema,
-        temperature: 0.3,
-      }
-    });
+  let retries = 3;
+  while (retries > 0) {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: gradingSchema,
+          temperature: 0.3,
+        }
+      });
 
-    const text = response.text;
-    if (!text) throw new Error("Keine Antwort von der KI erhalten.");
-    
-    return JSON.parse(text) as GradingResult;
-
-  } catch (error) {
-    console.error("Grading Error:", error);
-    throw new Error("Die Bewertung der Klausur ist fehlgeschlagen.");
+      const text = response.text;
+      if (!text) throw new Error("Keine Antwort von der KI erhalten.");
+      
+      return JSON.parse(text) as GradingResult;
+    } catch (error) {
+      console.error(`Grading attempt failed, retries left: ${retries - 1}`, error);
+      retries--;
+      if (retries === 0) throw new Error("Die Bewertung der Klausur ist fehlgeschlagen.");
+      await delay(2000);
+    }
   }
+  throw new Error("Unbekannter Fehler bei der Bewertung.");
 }
