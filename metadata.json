@@ -1,0 +1,5 @@
+{
+  "name": "KI-Klausur-Korrektur MVP",
+  "description": "Automated exam grading using AI. Upload handwritten student PDFs and grading criteria to receive instant feedback and graded reports.",
+  "requestFramePermissions": []
+}
